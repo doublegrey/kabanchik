@@ -2,10 +2,7 @@ module github.com/doublegrey/kabanchik
 
 go 1.21.3
 
-require (
-	github.com/twmb/franz-go v1.15.0
-	github.com/twmb/tlscfg v1.2.1
-)
+require github.com/twmb/franz-go v1.15.0
 
 require (
 	github.com/klauspost/compress v1.16.7 // indirect
