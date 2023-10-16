@@ -23,8 +23,9 @@ var (
 	seedBrokers = flag.String("brokers", "localhost:9092", "comma delimited list of seed brokers")
 	topic       = flag.String("topic", "", "topic to produce to or consume from")
 
-	recordBytes   = flag.Int("record-bytes", 100, "bytes per record value (producing)")
-	compression   = flag.String("compression", "none", "compression algorithm to use (none,gzip,snappy,lz4,zstd, for producing)")
+	recordSize    = flag.Int("size", 100, "record size in bytes")
+	seconds       = flag.Int("seconds", -1, "benchmark duration in seconds")
+	compression   = flag.String("compression", "none", "compression algorithm to use (none, gzip, snappy, lz4, zstd)")
 	batchMaxBytes = flag.Int("batch-max-bytes", 1000000, "the maximum batch size to allow per-partition (must be less than Kafka's max.message.bytes, producing)")
 
 	logLevel = flag.String("log-level", "", "if non-empty, use a basic logger with this log level (debug, info, warn, error)")
@@ -33,14 +34,14 @@ var (
 	group   = flag.String("group", "", "if non-empty, group to use for consuming rather than direct partition consuming (consuming)")
 
 	dialTLS      = flag.Bool("tls", false, "if true, use tls")
-	saslMethod   = flag.String("sasl-method", "", "if non-empty, sasl method to use (supports plain, scram-sha-256, scram-sha-512, aws_msk_iam)")
+	saslMethod   = flag.String("sasl-method", "", "if non-empty, sasl method to use (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, AWS_MSK_IAM)")
 	saslUsername = flag.String("username", "", "if non-empty, username to use for sasl")
 	saslPassword = flag.String("password", "", "if non-empty, password to use for sasl ")
 
 	rateRecs  int64
 	rateBytes int64
 
-	pool = sync.Pool{New: func() any { return kgo.SliceRecord(make([]byte, *recordBytes)) }}
+	pool = sync.Pool{New: func() any { return kgo.SliceRecord(make([]byte, *recordSize)) }}
 )
 
 func displayStats() {
@@ -65,14 +66,14 @@ func check(err error, msg string, args ...any) {
 func main() {
 	flag.Parse()
 
-	if *recordBytes <= 0 {
+	if *recordSize <= 0 {
 		die("record bytes must be larger than zero")
 	}
 
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(strings.Split(*seedBrokers, ",")...),
 		kgo.DefaultProduceTopic(*topic),
-		kgo.MaxBufferedRecords(250<<20 / *recordBytes + 1),
+		kgo.MaxBufferedRecords(250<<20 / *recordSize + 1),
 		kgo.MaxConcurrentFetches(3),
 		kgo.FetchMaxBytes(5 << 20),
 		kgo.ProducerBatchMaxBytes(int32(*batchMaxBytes)),
@@ -176,15 +177,33 @@ func main() {
 	} else {
 		var num int64
 
-		for {
-			cl.Produce(context.Background(), newRecord(num), func(r *kgo.Record, err error) {
-				pool.Put(r)
-				check(err, "produce error: %v", err)
-				atomic.AddInt64(&rateRecs, 1)
-				atomic.AddInt64(&rateBytes, int64(*recordBytes))
-			})
-			num++
+		done := make(chan struct{})
+		if *seconds != -1 {
+			go func() {
+				time.Sleep(time.Second * time.Duration(*seconds))
+				close(done)
+			}()
 		}
+
+		func() {
+			for {
+				select {
+				case <-done:
+					return
+				default:
+					cl.Produce(context.Background(), newRecord(num), func(r *kgo.Record, err error) {
+						pool.Put(r)
+						check(err, "produce error: %v", err)
+						atomic.AddInt64(&rateRecs, 1)
+						atomic.AddInt64(&rateBytes, int64(*recordSize))
+					})
+					num++
+				}
+			}
+		}()
+
+		cl.Flush(context.Background())
+		displayStats()
 	}
 }
 
