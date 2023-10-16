@@ -74,8 +74,6 @@ func main() {
 		kgo.DefaultProduceTopic(*topic),
 		kgo.MaxBufferedRecords(250<<20 / *recordBytes + 1),
 		kgo.MaxConcurrentFetches(3),
-		// We have good compression, so we want to limit what we read
-		// back because snappy deflation will balloon our memory usage.
 		kgo.FetchMaxBytes(5 << 20),
 		kgo.ProducerBatchMaxBytes(int32(*batchMaxBytes)),
 	}
@@ -160,20 +158,7 @@ func main() {
 
 	go displayStats()
 
-	switch *consume {
-	case false:
-		var num int64
-
-		for {
-			cl.Produce(context.Background(), newRecord(num), func(r *kgo.Record, err error) {
-				pool.Put(r)
-				check(err, "produce error: %v", err)
-				atomic.AddInt64(&rateRecs, 1)
-				atomic.AddInt64(&rateBytes, int64(*recordBytes))
-			})
-			num++
-		}
-	case true:
+	if *consume {
 		for {
 			fetches := cl.PollFetches(context.Background())
 			fetches.EachError(func(t string, p int32, err error) {
@@ -187,6 +172,18 @@ func main() {
 			})
 			atomic.AddInt64(&rateRecs, recs)
 			atomic.AddInt64(&rateBytes, bytes)
+		}
+	} else {
+		var num int64
+
+		for {
+			cl.Produce(context.Background(), newRecord(num), func(r *kgo.Record, err error) {
+				pool.Put(r)
+				check(err, "produce error: %v", err)
+				atomic.AddInt64(&rateRecs, 1)
+				atomic.AddInt64(&rateBytes, int64(*recordBytes))
+			})
+			num++
 		}
 	}
 }
