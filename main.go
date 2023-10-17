@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/sasl/aws"
 	"github.com/twmb/franz-go/pkg/sasl/plain"
@@ -20,18 +22,22 @@ import (
 )
 
 var (
-	seedBrokers = flag.String("brokers", "localhost:9092", "comma delimited list of seed brokers")
-	topic       = flag.String("topic", "", "topic to produce to or consume from")
+	seedBrokers       = flag.String("brokers", "localhost:9092", "comma delimited list of seed brokers")
+	topic             = flag.String("topic", "", "topic to produce to or consume from")
+	create            = flag.Bool("create", false, "if new topic should be created")
+	partitions        = flag.Int("partitions", 1, "new topic partitions")
+	replicationFactor = flag.Int("rf", 1, "new topic replication factor")
 
-	recordSize    = flag.Int("size", 100, "record size in bytes")
-	seconds       = flag.Int("seconds", -1, "benchmark duration in seconds")
-	compression   = flag.String("compression", "none", "compression algorithm to use (none, gzip, snappy, lz4, zstd)")
-	batchMaxBytes = flag.Int("batch-max-bytes", 1000000, "the maximum batch size to allow per-partition (must be less than Kafka's max.message.bytes, producing)")
+	recordSize       = flag.Int("size", 100, "record size in bytes")
+	recordsPerSecond = flag.Int("rps", -1, "records per second")
+	seconds          = flag.Int("seconds", -1, "benchmark duration in seconds")
+	compression      = flag.String("compression", "none", "compression algorithm to use (none, gzip, snappy, lz4, zstd)")
+	batchMaxBytes    = flag.Int("batch-max-bytes", 1000000, "the maximum batch size to allow per-partition (must be less than Kafka's max.message.bytes, producing)")
 
-	logLevel = flag.String("log-level", "", "if non-empty, use a basic logger with this log level (debug, info, warn, error)")
+	logLevel = flag.String("log-level", "", "set kgo log level (debug, info, warn, error)")
 
-	consume = flag.Bool("consume", false, "if true, consume rather than produce")
-	group   = flag.String("group", "", "if non-empty, group to use for consuming rather than direct partition consuming (consuming)")
+	consume = flag.Bool("consume", false, "switch to consumer mode")
+	group   = flag.String("group", "", "set consumer group")
 
 	dialTLS      = flag.Bool("tls", false, "if true, use tls")
 	saslMethod   = flag.String("sasl-method", "", "if non-empty, sasl method to use (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, AWS_MSK_IAM)")
@@ -68,6 +74,12 @@ func main() {
 
 	if *recordSize <= 0 {
 		die("record bytes must be larger than zero")
+	}
+
+	if *topic == "" {
+		now := time.Now()
+		tempTopic := fmt.Sprintf("benchmark.%d.%d.%d.%d.%d", now.Day(), now.Month(), now.Year(), now.Hour(), now.Minute())
+		topic = &tempTopic
 	}
 
 	opts := []kgo.Opt{
@@ -157,6 +169,13 @@ func main() {
 	cl, err := kgo.NewClient(opts...)
 	check(err, "unable to initialize client: %v", err)
 
+	if *create {
+		acl := kadm.NewClient(cl)
+		if _, err := acl.CreateTopic(context.Background(), int32(*partitions), int16(*replicationFactor), nil, *topic); err != nil {
+			die("failed to create topic: %v", err)
+		}
+	}
+
 	go displayStats()
 
 	if *consume {
@@ -201,9 +220,6 @@ func main() {
 				}
 			}
 		}()
-
-		cl.Flush(context.Background())
-		displayStats()
 	}
 }
 
